@@ -3,3 +3,12 @@ services:
     image: redis:7
     ports:
       - "6381:6379"
+  valkey:
+    image: valkey/valkey:8.1.10
+    ports:
+      - "6382:6379"
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    ports:
+      - "6383:6379"

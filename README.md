@@ -63,6 +63,39 @@ docker compose exec redis redis-cli ping
 docker compose down
 ```
 
-## Дальнейшая работа
 
-Добавить проверки pyrate-limiter и throttled-py с Redis, Valkey и DragonFly, а также тесты параллельных запросов, отключения хранилища и X-Forwarded-For.
+## Поведение при отключении Redis
+
+Во время работы FastAPI контейнер Redis был остановлен:
+
+```powershell
+docker compose stop redis
+```
+
+После этого запрос к `/limited` вернул:
+
+```text
+500 Internal Server Error
+```
+
+В traceback было зафиксировано исключение:
+
+```text
+redis.exceptions.ConnectionError:
+Error 10061 connecting to localhost:6381
+```
+
+Slowapi проверял лимит `moving-window` через Lua-команду Redis `EVALSHA`. Redis был недоступен, поэтому соединение завершилось ошибкой.
+
+В приложении были установлены параметры:
+
+```python
+swallow_errors=False
+in_memory_fallback_enabled=False
+```
+
+Поэтому ошибка не была подавлена и резервное хранилище в памяти не использовалось. Исключение дошло до FastAPI, который вернул HTTP 500.
+
+Запрос не был пропущен, поэтому поведение является **fail-closed**, но ошибка возвращается неконтролируемым ответом HTTP 500 вместо HTTP 503.
+
+После повторного запуска Redis команда `redis-cli ping` вернула `PONG`.
