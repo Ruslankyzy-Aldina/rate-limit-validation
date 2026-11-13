@@ -1,101 +1,145 @@
 # Rate limiting для FastAPI
 
-Тестовое приложение проверяет slowapi с Redis. Лимит — 5 запросов в минуту с одного IP.
+Тестовое приложение проверяет slowapi с Redis, Valkey и DragonFly. Настроен лимит — 5 запросов в минуту с одного IP. Тесты пока выполнялись вручную в PowerShell.
 
-## Адреса
+## Адреса хранилищ
 
-- FastAPI: http://127.0.0.1:8000
-- Redis: localhost:6381 (запускается через Docker Compose)
+| Хранилище | Адрес |
+|---|---|
+| Redis | `redis://localhost:6381/0` |
+| Valkey | `valkey://localhost:6382/0` |
+| DragonFly | `redis://localhost:6383/0` |
+
+FastAPI: <http://127.0.0.1:8000>
 
 ## Запуск
 
-Команды выполнять в PowerShell из папки проекта.
+Команды выполняются в PowerShell из папки проекта.
 
-1. Открыть Docker Desktop и дождаться запуска движка.
+1. Запусти Docker Desktop и дождись, пока Docker Engine будет готов.
 
-2. Создать виртуальное окружение и установить зависимости:
+2. Установи зависимости:
 
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+   ```powershell
+   py -3 -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
 
-3. Запустить Redis:
+3. Запусти контейнеры и проверь доступность хранилищ:
 
-```powershell
-docker compose up -d
-docker compose exec redis redis-cli ping
-```
+   ```powershell
+   docker compose up -d
+   docker compose exec redis redis-cli ping
+   docker compose exec valkey valkey-cli ping
+   docker compose exec dragonfly redis-cli ping
+   ```
 
-Ожидаемый ответ: `PONG`.
+   Для каждого запущенного хранилища ожидается ответ `PONG`.
 
-4. Запустить FastAPI:
+4. В PowerShell задай адрес нужного хранилища и запусти приложение. Команды для выбранного хранилища выполняются **в одном и том же окне**.
 
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.slowapi_app:app --host 127.0.0.1 --port 8000
-```
+   Redis:
 
-Оставить этот терминал открытым.
+   ```powershell
+   $env:REDIS_URL = "redis://localhost:6381/0"
+   .\.venv\Scripts\python.exe -m uvicorn app.slowapi_app:app --host 127.0.0.1 --port 8000
+   ```
 
-## Проверка лимита
+   Valkey:
 
-Во втором терминале PowerShell выполнить:
+   ```powershell
+   $env:REDIS_URL = "valkey://localhost:6382/0"
+   .\.venv\Scripts\python.exe -m uvicorn app.slowapi_app:app --host 127.0.0.1 --port 8000
+   ```
 
-```powershell
-1..6 | % { try { (iwr http://127.0.0.1:8000/limited -UseBasicParsing).StatusCode } catch { [int]$_.Exception.Response.StatusCode } }
-```
+   DragonFly:
 
-Если лимит до проверки не использовался, ожидаются ответы: `200, 200, 200, 200, 200, 429`.
+   ```powershell
+   $env:REDIS_URL = "redis://localhost:6383/0"
+   .\.venv\Scripts\python.exe -m uvicorn app.slowapi_app:app --host 127.0.0.1 --port 8000
+   ```
 
-Маршрут http://127.0.0.1:8000/health проверяет, что приложение запущено.
+   Перед переключением на другое хранилище останови Uvicorn сочетанием `Ctrl+C`. Затем задай новый `REDIS_URL` и запусти приложение снова.
 
-## Первый результат
+## Проверка приложения и лимита
 
-При первой проверке получены ответы: `200, 429, 429, 429, 429, 429`. До запуска команды маршрут `/limited` уже вызывался, поэтому часть лимита была использована.
-
-Результат повторной проверки после ожидания более одной минуты: **[вписать фактические ответы]**.
-
-## Остановка
-
-Остановить FastAPI сочетанием `Ctrl+C`, затем выполнить:
-
-```powershell
-docker compose down
-```
-
-
-## Поведение при отключении Redis
-
-Во время работы FastAPI контейнер Redis был остановлен:
+Проверка состояния приложения:
 
 ```powershell
-docker compose stop redis
+Invoke-WebRequest "http://127.0.0.1:8000/health" -UseBasicParsing
 ```
 
-После этого запрос к `/limited` вернул:
+Ожидается статус `200`.
 
-```text
-500 Internal Server Error
+Чтобы проверить лимит, отправь шесть запросов к `/limited`:
+
+```powershell
+1..6 | ForEach-Object {
+    try {
+        (Invoke-WebRequest "http://127.0.0.1:8000/limited" -UseBasicParsing).StatusCode
+    } catch {
+        [int]$_.Exception.Response.StatusCode
+    }
+}
 ```
 
-В traceback было зафиксировано исключение:
+При неиспользованном лимите ожидаются пять ответов `200`, затем `429`. Перед повторной проверкой подожди больше минуты после последних запросов к `/limited`.
 
-```text
-redis.exceptions.ConnectionError:
-Error 10061 connecting to localhost:6381
-```
+## Результаты обычной проверки
 
-Slowapi проверял лимит `moving-window` через Lua-команду Redis `EVALSHA`. Redis был недоступен, поэтому соединение завершилось ошибкой.
+Для каждого хранилища `/health` вернул `200`, а при шести запросах к `/limited` получены пять ответов `200` и один `429`.
 
-В приложении были установлены параметры:
+- **Redis:** подключение проверено через `redis://localhost:6381/0`.
+- **Valkey:** подключение проверено через `valkey://localhost:6382/0`.
+- **DragonFly:** подключение проверено через `redis://localhost:6383/0`.
+
+При первой проверке Redis получилось `200, 429, 429, 429, 429, 429`, потому что до неё маршрут `/limited` уже вызывался. После ожидания больше минуты повторная проверка дала пять `200` и один `429`.
+
+## Параллельные запросы
+
+Для каждого хранилища было отправлено 20 параллельных запросов к `/limited`.
+
+| Хранилище | `200` | `429` | Результат |
+|---|---:|---:|---|
+| Redis | 5 | 15 | Превышения лимита не обнаружено |
+| Valkey | 5 | 15 | Превышения лимита не обнаружено |
+| DragonFly | 5 | 15 | Превышения лимита не обнаружено |
+
+## Поведение при отключении хранилища
+
+Во время работы приложения соответствующий контейнер останавливали, затем отправляли запрос к `/limited`. Для всех трёх хранилищ запрос вернул HTTP `500`.
+
+- **Redis:** в traceback — `redis.exceptions.ConnectionError` при подключении к `localhost:6381`.
+- **Valkey:** в traceback — `valkey.exceptions.ConnectionError` при подключении к `localhost:6382`.
+- **DragonFly:** в traceback — `redis.exceptions.ConnectionError` при подключении к `localhost:6383`.
+
+Для DragonFly использовался Redis-клиент, поэтому ошибка имеет тип `redis.exceptions.ConnectionError`.
+
+В приложении заданы параметры:
 
 ```python
 swallow_errors=False
 in_memory_fallback_enabled=False
 ```
 
-Поэтому ошибка не была подавлена и резервное хранилище в памяти не использовалось. Исключение дошло до FastAPI, который вернул HTTP 500.
+Из-за этого ошибка хранилища не подавляется и резервное хранилище в памяти не используется. Запрос не проходит через обработчик лимита, но клиент получает HTTP `500`, а не `503`. Это поведение можно описать как fail-closed с необработанной ошибкой сервера.
 
-Запрос не был пропущен, поэтому поведение является **fail-closed**, но ошибка возвращается неконтролируемым ответом HTTP 500 вместо HTTP 503.
+После каждой проверки остановленное хранилище запускали снова и проверяли командой `ping`; оно отвечало `PONG`.
 
-После повторного запуска Redis команда `redis-cli ping` вернула `PONG`.
+## Проверка `X-Forwarded-For`
+
+Тест выполнен напрямую через localhost, без отдельного reverse proxy.
+
+При обычном запуске Uvicorn первые пять запросов с заголовком `X-Forwarded-For: 198.51.100.10` получили `200`. Шестой запрос с заголовком `X-Forwarded-For: 203.0.113.20` также получил `200`. Это показывает, что в проверенной конфигурации разные значения заголовка могли дать разные ключи лимитера.
+
+При повторном запуске Uvicorn с параметром `--no-proxy-headers` шестой запрос с другим значением заголовка получил `429`. В этой конфигурации заголовок не позволил получить новый лимит.
+
+Проверка с `--no-proxy-headers` не заменяет отдельный тест за реальным reverse proxy. В рабочем развертывании следует доверять forwarded-заголовкам только от известного прокси.
+
+## Остановка
+
+Останови FastAPI сочетанием `Ctrl+C`, затем останови контейнеры:
+
+```powershell
+docker compose down
+```
