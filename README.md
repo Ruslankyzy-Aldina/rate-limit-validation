@@ -221,6 +221,24 @@ in_memory_fallback_enabled=False
 потере хранилища в данной конфигурации возвращают HTTP `500`. В `throttled-py`
 ошибка backend явно преобразуется FastAPI-интеграцией в `503`.
 
+### Откуда берётся HTTP 500
+
+Это не ответ Redis и не специальный код лимитера. Это необработанная ошибка
+подключения, которую Uvicorn/FastAPI превращает в обычный Internal Server Error:
+
+- в `slowapi` явно установлены `swallow_errors=False` и
+  `in_memory_fallback_enabled=False`; поэтому `ConnectionError` из backend
+  не подавляется и не заменяется локальным хранилищем;
+- в `pyrate-limiter` вызов `RedisBucket`/`RedisStateStore` также пробрасывает
+  ошибку клиента Redis из `try_acquire`, а приложение не регистрирует отдельный
+  обработчик `redis.exceptions.ConnectionError`;
+- в `throttled-py` FastAPI-интеграция перехватывает `StoreUnavailableError` и
+  создаёт `HTTPException(status_code=503, detail="Rate limit store unavailable")`.
+
+Таким образом, наблюдение подтверждено и экспериментом, и исходным кодом:
+`500` означает отсутствие прикладной политики обработки отказа, а `503` —
+явно реализованную политику «сервис временно недоступен».
+
 ### Итог полной матрицы
 
 Автоматический `tests/run_all.ps1` выполнен в Windows PowerShell 5.1 для всех
