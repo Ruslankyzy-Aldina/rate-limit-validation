@@ -115,6 +115,42 @@ Invoke-WebRequest "http://127.0.0.1:8000/health" -UseBasicParsing
 
 Для DragonFly использовался Redis-клиент, поэтому ошибка имеет тип `redis.exceptions.ConnectionError`.
 
+## Следующий этап: pyrate-limiter 4.5.1
+
+В проект добавлено отдельное приложение `app.pyrate_limiter_app`. Оно не изменяет
+конфигурацию `slowapi` и проверяет два алгоритма с Redis-совместимым хранилищем:
+
+- `sliding-window` — точный sliding-window log через `RedisBucket`;
+- `token-bucket` — GCRA/token bucket через `StateBucket` и `RedisStateStore`.
+
+Установи зависимость и запускай приложение в отдельном окне PowerShell:
+
+```powershell
+\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:REDIS_URL = "redis://localhost:6381/0"
+$env:PYRATE_ALGORITHM = "sliding-window"
+$env:PYRATE_BUCKET_KEY = "pyrate-redis-sliding"
+\.venv\Scripts\python.exe -m uvicorn app.pyrate_limiter_app:app --host 127.0.0.1 --port 8001
+```
+
+Для token bucket замени `PYRATE_ALGORITHM` на `token-bucket` и используй новый
+`PYRATE_BUCKET_KEY`. Для Valkey укажи `valkey://localhost:6382/0`, для DragonFly
+— `redis://localhost:6383/0`. На каждом чистом ключе ожидаются пять ответов
+`200`, затем `429` для sliding-window. Token bucket также допускает burst,
+поэтому его поведение дополнительно проверяй серией запросов после простоя.
+
+Приложение автоматически преобразует `valkey://` в `redis://` для `redis-py`:
+Valkey совместим с Redis-протоколом, но `redis-py` принимает только схему
+`redis://`.
+
+### Результаты проверки pyrate-limiter
+
+Для token bucket на чистых ключах выполнены серии из шести последовательных
+запросов: для Redis, Valkey и DragonFly получено `200, 200, 200, 200, 200, 429`.
+
+Для конкурентной проверки отправлено 20 запросов одновременно. На всех трёх
+хранилищах получено 5 ответов `200` и 15 ответов `429`.
+
 В приложении заданы параметры:
 
 ```python
