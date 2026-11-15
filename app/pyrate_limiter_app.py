@@ -3,7 +3,7 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from redis import Redis
 
 from pyrate_limiter import (
@@ -55,9 +55,12 @@ async def health():
 
 
 @app.get("/limited")
-async def limited():
+async def limited(request: Request):
     try:
-        acquired = limiter.try_acquire("shared-client", blocking=False)
+        # Uvicorn supplies the proxy-resolved client address when proxy headers
+        # are enabled, so this key can be compared with slowapi/throttled-py.
+        client_key = request.client.host if request.client else "unknown"
+        acquired = limiter.try_acquire(client_key, blocking=False)
         if acquired is False:
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
     except Exception as exc:

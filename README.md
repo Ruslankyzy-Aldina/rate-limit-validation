@@ -1,5 +1,7 @@
 # Rate limiting для FastAPI
 
+Исходный код тестов и обновлённый отчёт: [github.com/Ruslankyzy-Aldina/rate-limit-validation](https://github.com/Ruslankyzy-Aldina/rate-limit-validation).
+
 Тестовое приложение проверяет slowapi с Redis, Valkey и DragonFly. Настроен лимит — 5 запросов в минуту с одного IP. Тесты пока выполнялись вручную в PowerShell.
 
 ## Адреса хранилищ
@@ -158,22 +160,23 @@ Redis-протокол. Sliding-window log и token bucket корректно о
 
 ## Сравнительный вывод
 
-| Критерий | slowapi | pyrate-limiter |
+| Критерий | slowapi | pyrate-limiter | throttled-py |
 |---|---|---|
-| Интеграция с FastAPI | Декоратор маршрута и готовый обработчик `429` | Ограничитель вызывается из обработчика приложения |
-| Проверенный алгоритм | `moving-window` через `limits` | Sliding-window log и token bucket |
-| Redis-compatible backend | Redis, Valkey, DragonFly | Redis, Valkey, DragonFly через `redis-py` |
-| Конкурентная серия 20 запросов | 5×200, 15×429 | 5×200, 15×429 |
-| Backend недоступен | HTTP 500 при отключённых fallback’ах | HTTP 500 |
-| Burst-поведение | Зависит от стратегии `limits` | Token bucket допускает burst до ёмкости bucket |
+| Интеграция с FastAPI | Декоратор маршрута и готовый обработчик `429` | Ограничитель вызывается из обработчика приложения | Async-декоратор и готовый обработчик `429` |
+| Проверенный алгоритм | `moving-window` через `limits` | Sliding-window log и token bucket | Token bucket |
+| Redis-compatible backend | Redis, Valkey, DragonFly | Redis, Valkey, DragonFly через `redis-py` | Redis, Valkey, DragonFly через `redis-py` |
+| Конкурентная серия 20 запросов | 5×200, 15×429 | 5×200, 15×429 | 5×200, 15×429 |
+| Backend недоступен | HTTP 500 при отключённых fallback’ах | HTTP 500 | HTTP 503 |
+| Burst-поведение | Зависит от стратегии `limits` | Token bucket допускает burst до ёмкости bucket | Token bucket с burst по quota DSL |
 
 ### Практический выбор
 
 Для обычного FastAPI-приложения с простым лимитом и минимальным собственным
-кодом удобнее `slowapi`: лимит задаётся декоратором, а обработка `429` уже
-подключена. `pyrate-limiter` лучше подходит, когда требуется явно выбирать
-алгоритм, использовать token bucket или вызывать ограничитель из собственной
-бизнес-логики.
+кодом удобны `slowapi` и `throttled-py`: лимит задаётся декоратором, а обработка
+`429` уже подключена. `pyrate-limiter` лучше подходит, когда требуется явно
+выбирать алгоритм, использовать token bucket или вызывать ограничитель из
+собственной бизнес-логики. `throttled-py` отдельно выделяется контролируемым
+`503` при недоступности backend.
 
 Обе библиотеки в этой конфигурации требуют доступного внешнего хранилища.
 Если Redis, Valkey или DragonFly недоступен, приложение не переключается на
@@ -198,6 +201,53 @@ in_memory_fallback_enabled=False
 Из-за этого ошибка хранилища не подавляется и резервное хранилище в памяти не используется. Запрос не проходит через обработчик лимита, но клиент получает HTTP `500`, а не `503`. Это поведение можно описать как fail-closed с необработанной ошибкой сервера.
 
 После каждой проверки остановленное хранилище запускали снова и проверяли командой `ping`; оно отвечало `PONG`.
+
+## Проверка throttled-py 3.5.0
+
+Добавлено отдельное приложение `app.throttled_app` и скрипт
+`tests/run_matrix.ps1`. Интеграция использует официальный async FastAPI
+декоратор `throttled.asyncio.contrib.fastapi.Limiter` и `RedisStore`.
+
+Для Redis, Valkey и DragonFly результаты одинаковые:
+
+- последовательные запросы: `200, 200, 200, 200, 200, 429`;
+- 20 параллельных запросов: 5 ответов `200` и 15 ответов `429`;
+- пять запросов с одним `X-Forwarded-For` и запрос с другим адресом: новый
+  forwarded-адрес получил `200`;
+- остановка backend во время работы: HTTP `503`, затем после запуска контейнера
+  `PONG`.
+
+Это отличается от текущих интеграций `slowapi` и `pyrate-limiter`, которые при
+потере хранилища в данной конфигурации возвращают HTTP `500`. В `throttled-py`
+ошибка backend явно преобразуется FastAPI-интеграцией в `503`.
+
+### X-Forwarded-For: важное различие
+
+В тесте с обычным Uvicorn `slowapi` при смене `X-Forwarded-For` получил новый
+лимит (`200`), то есть доверял forwarded-адресу. Запуск с `--no-proxy-headers`
+устраняет это поведение и даёт `429` для шестого запроса. Поэтому forwarded-
+заголовки нельзя принимать от произвольного клиента без доверенного reverse
+proxy.
+
+В текущем приложении `pyrate-limiter` ключ строится из `request.client.host`.
+При прямом запуске на localhost смена заголовка в проверенной серии не создала
+новый ключ и дала `429`; это безопаснее по умолчанию, но не является заменой
+настройке доверенного proxy.
+
+### Воспроизводимый скрипт
+
+После запуска любого приложения на порту `8000` выполни:
+
+```powershell
+.\tests\run_matrix.ps1 -BaseUrl http://127.0.0.1:8000
+```
+
+Источники API, сверенные с установленным исходным кодом и документацией:
+
+- [slowapi](https://github.com/laurentS/slowapi);
+- [pyrate-limiter](https://github.com/vutran1710/PyrateLimiter);
+- [throttled-py](https://github.com/ZhuoZhuoCrayon/throttled-py);
+- [throttled-py FastAPI integration](https://throttled-py.readthedocs.io/en/latest/contrib/fastapi.html).
 
 ## Проверка `X-Forwarded-For`
 
