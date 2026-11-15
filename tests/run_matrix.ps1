@@ -16,6 +16,20 @@ function Get-StatusCode([scriptblock]$Request) {
     }
 }
 
+function Get-ParallelStatusCodes([string]$Url, [int]$Count) {
+    $jobs = 1..$Count | ForEach-Object {
+        Start-Job -ArgumentList $Url -ScriptBlock {
+            param($RequestUrl)
+            try { (Invoke-WebRequest $RequestUrl -UseBasicParsing -TimeoutSec 10).StatusCode }
+            catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 } }
+        }
+    }
+    Wait-Job $jobs | Out-Null
+    $result = $jobs | Receive-Job
+    Remove-Job $jobs -Force
+    return $result
+}
+
 Write-Host "Sequential limit test"
 $sequential = 1..6 | ForEach-Object {
     Get-StatusCode { (Invoke-WebRequest "$BaseUrl/limited" -UseBasicParsing).StatusCode }
@@ -23,13 +37,7 @@ $sequential = 1..6 | ForEach-Object {
 $sequential -join ", "
 
 Write-Host "Parallel limit test"
-$parallel = 1..$ParallelRequests | ForEach-Object -Parallel {
-    try {
-        (Invoke-WebRequest "$using:BaseUrl/limited" -UseBasicParsing -TimeoutSec 10).StatusCode
-    } catch {
-        if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
-    }
-} -ThrottleLimit $ParallelRequests
+$parallel = Get-ParallelStatusCodes "$BaseUrl/limited" $ParallelRequests
 $parallel | Group-Object | Sort-Object Name | ForEach-Object {
     "$($_.Name)=$($_.Count)"
 }

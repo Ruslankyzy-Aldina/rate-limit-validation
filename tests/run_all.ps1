@@ -20,6 +20,28 @@ function Statuses([string]$Url, [int]$Count, [hashtable]$Headers = @{}) {
     return (1..$Count | ForEach-Object { Status $Url $Headers })
 }
 
+function ParallelStatuses([string]$Url, [int]$Count) {
+    $jobs = 1..$Count | ForEach-Object {
+        Start-Job -ArgumentList $Url -ScriptBlock {
+            param($RequestUrl)
+            try { (Invoke-WebRequest $RequestUrl -UseBasicParsing -TimeoutSec 10).StatusCode }
+            catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 } }
+        }
+    }
+    Wait-Job $jobs | Out-Null
+    $result = $jobs | Receive-Job
+    Remove-Job $jobs -Force
+    return $result
+}
+
+function Clear-TestStore([hashtable]$Store) {
+    if ($Store.Service -eq "valkey") {
+        docker compose exec -T valkey valkey-cli FLUSHDB | Out-Null
+    } else {
+        docker compose exec -T $Store.Service redis-cli FLUSHDB | Out-Null
+    }
+}
+
 for ($i = 0; $i -lt $apps.Count; $i++) {
     for ($j = 0; $j -lt $stores.Count; $j++) {
         $app = $apps[$i]
@@ -36,11 +58,11 @@ for ($i = 0; $i -lt $apps.Count; $i++) {
         Start-Sleep -Seconds 3
         $url = "http://127.0.0.1:$port"
 
+        Clear-TestStore $store
         $basic = Statuses "$url/limited" 6
-        $parallel = 1..20 | ForEach-Object -Parallel {
-            try { (Invoke-WebRequest "$using:url/limited" -UseBasicParsing -TimeoutSec 10).StatusCode }
-            catch { if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 } }
-        } -ThrottleLimit 20
+        Clear-TestStore $store
+        $parallel = ParallelStatuses "$url/limited" 20
+        Clear-TestStore $store
         $xffA = Statuses "$url/limited" 5 @{ "X-Forwarded-For" = "198.51.100.10" }
         $xffB = Status "$url/limited" @{ "X-Forwarded-For" = "203.0.113.20" }
 
