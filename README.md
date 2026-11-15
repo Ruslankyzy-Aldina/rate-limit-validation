@@ -221,6 +221,21 @@ in_memory_fallback_enabled=False
 потере хранилища в данной конфигурации возвращают HTTP `500`. В `throttled-py`
 ошибка backend явно преобразуется FastAPI-интеграцией в `503`.
 
+### Итог полной матрицы
+
+Автоматический `tests/run_all.ps1` выполнен в Windows PowerShell 5.1 для всех
+девяти комбинаций. В каждой комбинации последовательный тест дал
+`200,200,200,200,200,429`, параллельный тест — `5×200` и `15×429`.
+
+| Лимитер | Redis | Valkey | DragonFly |
+|---|---:|---:|---:|
+| `slowapi` | parallel OK / 500 | parallel OK / 500 | parallel OK / 500 |
+| `pyrate-limiter` | parallel OK / 500 | parallel OK / 500 | parallel OK / 500 |
+| `throttled-py` | parallel OK / 503 | parallel OK / 503 | parallel OK / 503 |
+
+Во всех девяти запусках после остановки backend контейнер был автоматически
+запущен обратно и отвечал `PONG`.
+
 ### X-Forwarded-For: важное различие
 
 В тесте с обычным Uvicorn `slowapi` при смене `X-Forwarded-For` получил новый
